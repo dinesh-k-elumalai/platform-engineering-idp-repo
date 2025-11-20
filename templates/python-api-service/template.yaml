@@ -1,0 +1,189 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: python-api-service
+  title: Python API Service
+  description: Create a new Python FastAPI microservice with production defaults
+  tags:
+    - python
+    - api
+    - microservice
+    - fastapi
+spec:
+  owner: platform-team
+  type: service
+  
+  parameters:
+    - title: Service Information
+      required:
+        - name
+        - description
+        - owner
+      properties:
+        name:
+          title: Service Name
+          type: string
+          description: Name of the service (lowercase, hyphen-separated)
+          pattern: '^[a-z][a-z0-9-]*$'
+          ui:autofocus: true
+          ui:help: "Use lowercase letters, numbers, and hyphens only"
+        
+        description:
+          title: Description
+          type: string
+          description: Brief description of what this service does
+          maxLength: 200
+        
+        owner:
+          title: Team Owner
+          type: string
+          ui:field: OwnerPicker
+          ui:options:
+            catalogFilter:
+              kind: Group
+          
+    - title: Service Configuration
+      properties:
+        database:
+          title: Database Required
+          type: boolean
+          default: false
+          description: Add PostgreSQL database with migrations
+        
+        databaseType:
+          title: Database Type
+          type: string
+          default: postgres
+          enum:
+            - postgres
+            - mysql
+          enumNames:
+            - PostgreSQL
+            - MySQL
+          ui:widget: radio
+          dependencies:
+            database:
+              oneOf:
+                - properties:
+                    database:
+                      const: true
+        
+        redis:
+          title: Redis Cache Required
+          type: boolean
+          default: false
+          description: Add Redis for caching and sessions
+        
+        queue:
+          title: Message Queue
+          type: boolean
+          default: false
+          description: Add RabbitMQ or Redis for async tasks
+        
+        replicas:
+          title: Initial Replicas
+          type: number
+          default: 2
+          enum: [1, 2, 3, 5, 10]
+          description: Number of pod replicas
+        
+        resources:
+          title: Resource Allocation
+          type: string
+          default: small
+          enum: ['small', 'medium', 'large']
+          enumNames:
+            - 'Small (256Mi RAM, 250m CPU)'
+            - 'Medium (512Mi RAM, 500m CPU)'
+            - 'Large (1Gi RAM, 1000m CPU)'
+  
+  steps:
+    - id: fetch-template
+      name: Fetch Application Template
+      action: fetch:template
+      input:
+        url: ./skeleton
+        values:
+          name: ${{ parameters.name }}
+          description: ${{ parameters.description }}
+          owner: ${{ parameters.owner }}
+          database: ${{ parameters.database }}
+          databaseType: ${{ parameters.databaseType }}
+          redis: ${{ parameters.redis }}
+          queue: ${{ parameters.queue }}
+          replicas: ${{ parameters.replicas }}
+          resources: ${{ parameters.resources }}
+          
+    - id: create-repo
+      name: Create GitHub Repository
+      action: github:repo:create
+      input:
+        repoUrl: github.com?repo=${{ parameters.name }}
+        description: ${{ parameters.description }}
+        access: internal
+        defaultBranch: main
+        topics:
+          - microservice
+          - fastapi
+          - python
+          
+    - id: publish-code
+      name: Publish Code to Repository
+      action: publish:github
+      input:
+        repoUrl: github.com?repo=${{ parameters.name }}
+        defaultBranch: main
+        
+    - id: setup-infrastructure
+      name: Provision Infrastructure Resources
+      action: custom:provision
+      input:
+        service: ${{ parameters.name }}
+        database: ${{ parameters.database }}
+        databaseType: ${{ parameters.databaseType }}
+        redis: ${{ parameters.redis }}
+        queue: ${{ parameters.queue }}
+        
+    - id: create-argocd-app
+      name: Create ArgoCD Application
+      action: argocd:create-app
+      input:
+        name: ${{ parameters.name }}
+        namespace: ${{ parameters.name }}
+        repoUrl: https://github.com/${{ parameters.name }}
+        path: deploy/staging
+        
+    - id: configure-ci
+      name: Configure CI/CD Pipeline
+      action: github:actions:create
+      input:
+        repoUrl: github.com/${{ parameters.name }}
+        workflowFile: .github/workflows/deploy.yml
+        
+    - id: setup-monitoring
+      name: Configure Monitoring & Alerts
+      action: custom:monitoring
+      input:
+        service: ${{ parameters.name }}
+        owner: ${{ parameters.owner }}
+        dashboards: true
+        alerts: true
+        
+    - id: register-catalog
+      name: Register in Service Catalog
+      action: catalog:register
+      input:
+        repoContentsUrl: https://github.com/${{ parameters.name }}
+        catalogInfoPath: '/catalog-info.yaml'
+  
+  output:
+    links:
+      - title: Repository
+        url: https://github.com/${{ parameters.name }}
+      - title: Open in Backstage
+        icon: catalog
+        entityRef: ${{ steps['register-catalog'].output.entityRef }}
+      - title: ArgoCD Application
+        url: https://argocd.company.com/applications/${{ parameters.name }}
+      - title: Grafana Dashboard
+        url: https://grafana.company.com/d/${{ parameters.name }}
